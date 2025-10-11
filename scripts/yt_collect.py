@@ -5,6 +5,8 @@ from googleapiclient.discovery import build
 from dotenv import load_dotenv
 from tqdm import tqdm
 import time
+from googleapiclient.errors import HttpError
+import sys
 
 # Load environment variables
 load_dotenv()
@@ -17,10 +19,35 @@ if not API_KEY:
 # Initialize YouTube API
 youtube = build('youtube', 'v3', developerKey=API_KEY)
 
+
+def safe_execute(request):
+    """Execute a googleapiclient request and handle HttpError with clearer messages."""
+    try:
+        return request.execute()
+    except HttpError as e:
+        # Try to extract a helpful message from the error content
+        try:
+            error_content = e.content.decode() if isinstance(e.content, (bytes, bytearray)) else str(e.content)
+        except Exception:
+            error_content = str(e)
+
+        if 'API key expired' in error_content or 'api key' in error_content.lower():
+            print("ERROR: The YouTube API key appears to be invalid or expired.")
+            print("Please renew or replace the API key in your .env file (YOUTUBE_API_KEY).")
+            print(f"Details: {error_content}")
+            sys.exit(1)
+        else:
+            print("ERROR: YouTube API request failed.")
+            print(f"Details: {error_content}")
+            sys.exit(1)
+    except Exception as e:
+        print("ERROR: Unexpected error during API request:", e)
+        sys.exit(1)
+
 # Artist configurations - YOU NEED TO UPDATE THESE CHANNEL IDs
 ARTISTS = {
-    'Max Giesinger': 'UCxxxxxxxxxxxxxxxxxx',  # Replace with actual channel ID
-    'Wincent Weiss': 'UCyyyyyyyyyyyyyyyyyy'   # Replace with actual channel ID
+    'Max Giesinger': 'UCZygMGbIE8JNE1_qqtmIXhA',  # Replace with actual channel ID
+    'Wincent Weiss': 'UC_7HfGUn1OVNlu0p8F2Cmwg'   # Replace with actual channel ID
 }
 
 def get_channel_videos(channel_id, max_results=50):
@@ -32,9 +59,12 @@ def get_channel_videos(channel_id, max_results=50):
         part='contentDetails',
         id=channel_id
     )
-    response = request.execute()
-    
-    if not response['items']:
+    response = safe_execute(request)
+
+    # Defensive: some API responses may not include 'items' (e.g., when quota or bad request).
+    if not response or 'items' not in response:
+        print("WARNING: Unexpected response from YouTube API when fetching channel contentDetails:")
+        print(response)
         return videos
     
     playlist_id = response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
@@ -49,8 +79,13 @@ def get_channel_videos(channel_id, max_results=50):
             maxResults=min(50, max_results - len(videos)),
             pageToken=next_page_token
         )
-        response = request.execute()
-        
+        response = safe_execute(request)
+
+        if not response or 'items' not in response:
+            print("WARNING: Unexpected response from playlistItems.list:")
+            print(response)
+            break
+
         for item in response['items']:
             video_id = item['contentDetails']['videoId']
             videos.append(video_id)
@@ -73,7 +108,7 @@ def get_video_details(video_ids):
             part='snippet,statistics,contentDetails',
             id=','.join(batch)
         )
-        response = request.execute()
+        response = safe_execute(request)
         
         for video in response['items']:
             video_data.append({
